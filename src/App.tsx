@@ -10,11 +10,23 @@ type BibleResponse={translation?:string;source?:string;license?:string;verses?:V
 const daily=[['Psalm 119:105','Your word is a lamp to my feet and a light to my path.'],['Proverbs 3:5','Trust in Yahweh with all your heart, and don’t lean on your own understanding.'],['Philippians 4:13','I can do all things through Christ, who strengthens me.'],['Isaiah 41:10','Don’t you be afraid, for I am with you. Don’t be dismayed, for I am your God.']];
 const standardNames=new Set(library.slice(0,66).map(b=>b.name));
 const ethiopianNames=new Set([...standardNames,'1 Enoch','Jubilees','1 Meqabyan','2 Meqabyan','3 Meqabyan','Prayer of Manasseh','2 Esdras (Ezra Sutuel)','Baruch','Letter of Jeremiah','4 Baruch (Paralipomena of Jeremiah)','Prayer of Azariah / Song of the Three Holy Children','Susanna','Bel and the Dragon','Wisdom','Sirach']);
+const secondaryReaderBooks=new Set(['2 Enoch (Secrets of Enoch)','1 Clement','4 Baruch (Paralipomena of Jeremiah)']);
 
 function booksFor(collection:Collection){
   if(collection==='standard') return library.filter(b=>standardNames.has(b.name));
   if(collection==='ethiopian') return library.filter(b=>ethiopianNames.has(b.name));
   return library;
+}
+
+async function fetchReader(book:string,chapter:number,signal:AbortSignal):Promise<BibleResponse>{
+  const primary=await fetch(`/api/bible?book=${encodeURIComponent(book)}&chapter=${chapter}`,{signal});
+  const first:BibleResponse=await primary.json();
+  if(primary.ok)return first;
+  if(!secondaryReaderBooks.has(book))throw new Error(first.error||'Reader source unavailable');
+  const secondary=await fetch(`/api/expanded?book=${encodeURIComponent(book)}&chapter=${chapter}`,{signal});
+  const second:BibleResponse=await secondary.json();
+  if(!secondary.ok)throw new Error(second.error||first.error||'Reader source unavailable');
+  return second;
 }
 
 export default function App(){
@@ -46,8 +58,7 @@ export default function App(){
     const controller=new AbortController();
     setLoading(true);setVerses([]);setMessage('');setSource('');
     const builtIn=loaded[`${book}:${chapter}`]||[];
-    fetch(`/api/bible?book=${encodeURIComponent(book)}&chapter=${chapter}`,{signal:controller.signal})
-      .then(async r=>{const data:BibleResponse=await r.json();if(!r.ok)throw new Error(data.error||'Reader source unavailable');return data})
+    fetchReader(book,chapter,controller.signal)
       .then(data=>{
         const next=data.verses||[];
         setVerses(next);
