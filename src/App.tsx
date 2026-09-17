@@ -5,6 +5,7 @@ import { library, loaded, bookReaderStatus, type BookInfo, type Verse } from './
 type JournalEntry={id:string;title:string;body:string;created:string};
 type Tab='home'|'bible'|'journal';
 type Collection='standard'|'ethiopian'|'expanded';
+type BibleResponse={translation?:string;source?:string;license?:string;verses?:Verse[];error?:string};
 
 const daily=[['Psalm 119:105','Your word is a lamp to my feet and a light to my path.'],['Proverbs 3:5','Trust in Yahweh with all your heart, and don’t lean on your own understanding.'],['Philippians 4:13','I can do all things through Christ, who strengthens me.'],['Isaiah 41:10','Don’t you be afraid, for I am with you. Don’t be dismayed, for I am your God.']];
 const standardNames=new Set(library.slice(0,66).map(b=>b.name));
@@ -24,6 +25,8 @@ export default function App(){
   const [verses,setVerses]=useState<Verse[]>([]);
   const [loading,setLoading]=useState(false);
   const [message,setMessage]=useState('');
+  const [source,setSource]=useState('');
+  const [translation,setTranslation]=useState('World English Bible');
   const [query,setQuery]=useState('');
   const [title,setTitle]=useState('');
   const [body,setBody]=useState('');
@@ -36,25 +39,34 @@ export default function App(){
 
   useEffect(()=>{
     if(!visibleBooks.some(b=>b.name===book)){setBook(visibleBooks[0]?.name||'Genesis');setChapter(1)}
-  },[collection]);
+  },[collection,book,visibleBooks]);
 
   useEffect(()=>{
     if(tab!=='bible')return;
-    let cancelled=false;
-    setLoading(true);setVerses([]);setMessage('');
-    const key=`${book}:${chapter}`;
-    const builtIn=loaded[key]||[];
-    if(isExpanded){
-      setVerses(builtIn);
-      setLoading(false);
-      setMessage(builtIn.length?bookReaderStatus(info):`${book} is part of the expanded collection, but this chapter does not yet have a verified redistributable English text connected. The book and chapter are preserved rather than substituted.`);
-      return()=>{cancelled=true};
-    }
-    fetch(`https://bible-api.com/${encodeURIComponent(book)}%20${chapter}?translation=web`)
-      .then(r=>r.json()).then(d=>{if(cancelled)return;const next=(d.verses||[]).map((v:any)=>({verse:Number(v.verse),text:String(v.text||'').trim()}));setVerses(next);if(!next.length)setMessage('This chapter could not be loaded. Please check your connection and try again.')})
-      .catch(()=>{if(!cancelled)setMessage('This chapter could not be loaded. Please check your connection and try again.')})
-      .finally(()=>{if(!cancelled)setLoading(false)});
-    return()=>{cancelled=true};
+    const controller=new AbortController();
+    setLoading(true);setVerses([]);setMessage('');setSource('');
+    const builtIn=loaded[`${book}:${chapter}`]||[];
+    fetch(`/api/bible?book=${encodeURIComponent(book)}&chapter=${chapter}`,{signal:controller.signal})
+      .then(async r=>{const data:BibleResponse=await r.json();if(!r.ok)throw new Error(data.error||'Reader source unavailable');return data})
+      .then(data=>{
+        const next=data.verses||[];
+        setVerses(next);
+        setTranslation(data.translation||(isExpanded?'Expanded Scripture source':'World English Bible'));
+        setSource([data.source,data.license].filter(Boolean).join(' · '));
+        if(!next.length)setMessage('This chapter did not return readable verse text.');
+      })
+      .catch(err=>{
+        if(controller.signal.aborted)return;
+        if(builtIn.length){
+          setVerses(builtIn);
+          setTranslation('Word & Wisdom saved verified text');
+          setMessage(`${err.message}. Showing the verified text saved in the app for this chapter.`);
+        }else{
+          setMessage(`${err.message}. The book and chapter remain listed, but Word & Wisdom will not invent or substitute text.`);
+        }
+      })
+      .finally(()=>{if(!controller.signal.aborted)setLoading(false)});
+    return()=>controller.abort();
   },[book,chapter,tab,isExpanded]);
 
   useEffect(()=>localStorage.setItem('ww-journal',JSON.stringify(entries)),[entries]);
@@ -71,7 +83,7 @@ export default function App(){
       </>}
       {tab==='bible'&&<section className="reader-layout">
         <aside className="library"><h2>Books</h2><div className="canon-switch"><button className={collection==='standard'?'active':''} onClick={()=>setCollection('standard')}>66 Books</button><button className={collection==='ethiopian'?'active':''} onClick={()=>setCollection('ethiopian')}>Ethiopian</button><button className={collection==='expanded'?'active':''} onClick={()=>setCollection('expanded')}>Expanded</button></div><input placeholder="Find a book" value={query} onChange={e=>setQuery(e.target.value)}/><div className="book-list">{filteredBooks.map(b=><button className={book===b.name?'active':''} key={b.name} onClick={()=>{setBook(b.name);setChapter(1)}}>{b.name}{!standardNames.has(b.name)&&<small>{b.group}</small>}</button>)}</div></aside>
-        <article className="reader"><div className="reader-head"><div><small>{isExpanded?'EXPANDED SCRIPTURE STUDY':'WORLD ENGLISH BIBLE'}</small><h1>{book} {chapter}</h1>{isExpanded&&<span className="source-status">{bookReaderStatus(info)}</span>}</div><div className="chapter-controls"><button disabled={chapter<=1} onClick={()=>setChapter(c=>c-1)}>‹</button><select value={chapter} onChange={e=>setChapter(Number(e.target.value))}>{Array.from({length:chapterCount},(_,i)=><option key={i+1}>{i+1}</option>)}</select><button disabled={chapter>=chapterCount} onClick={()=>setChapter(c=>c+1)}>›</button></div></div>{loading&&<p className="muted">Loading Scripture…</p>}{message&&<p className="reader-note">{message}</p>}<div className="verses">{verses.map(v=><p key={v.verse}><sup>{v.verse}</sup>{v.text}</p>)}</div>{isExpanded&&<p className="source-disclaimer">Expanded texts are kept clearly labelled and are only shown where a reusable source is connected. Missing chapters are never invented or silently replaced.</p>}</article>
+        <article className="reader"><div className="reader-head"><div><small>{isExpanded?'EXPANDED SCRIPTURE STUDY':'SCRIPTURE READER'}</small><h1>{book} {chapter}</h1><span className="source-status">{translation}</span>{source&&<span className="source-status">{source}</span>}{isExpanded&&<span className="source-status">{bookReaderStatus(info)}</span>}</div><div className="chapter-controls"><button disabled={chapter<=1} onClick={()=>setChapter(c=>c-1)}>‹</button><select value={chapter} onChange={e=>setChapter(Number(e.target.value))}>{Array.from({length:chapterCount},(_,i)=><option key={i+1}>{i+1}</option>)}</select><button disabled={chapter>=chapterCount} onClick={()=>setChapter(c=>c+1)}>›</button></div></div>{loading&&<p className="muted">Loading Scripture…</p>}{message&&<p className="reader-note">{message}</p>}<div className="verses">{verses.map(v=><p key={v.verse}><sup>{v.verse}</sup>{v.text}</p>)}</div>{isExpanded&&<p className="source-disclaimer">Expanded texts are clearly labelled with their reader source. Missing chapters are never invented or silently replaced.</p>}</article>
       </section>}
       {tab==='journal'&&<section className="journal"><div><small>PRIVATE JOURNAL</small><h1>Write what stood out.</h1><p>Your entries are currently stored only in this browser.</p></div><div className="journal-form"><input placeholder="Title or Scripture reference" value={title} onChange={e=>setTitle(e.target.value)}/><textarea placeholder="Write your reflection, prayer or study note…" value={body} onChange={e=>setBody(e.target.value)}/><button className="primary" onClick={saveEntry}><NotebookPen size={18}/>Save entry</button></div><div className="entries">{entries.length===0?<p className="muted">No journal entries yet.</p>:entries.map(e=><article key={e.id}><small>{new Date(e.created).toLocaleDateString()}</small><h3>{e.title}</h3><p>{e.body}</p><button onClick={()=>setEntries(entries.filter(x=>x.id!==e.id))}>Delete</button></article>)}</div></section>}
     </main>
